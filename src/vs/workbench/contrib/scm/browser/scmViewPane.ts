@@ -6,16 +6,16 @@
 import 'vs/css!./media/scm';
 import { Event, Emitter } from 'vs/base/common/event';
 import { basename, dirname, isEqual } from 'vs/base/common/resources';
-import { IDisposable, Disposable, DisposableStore, combinedDisposable } from 'vs/base/common/lifecycle';
+import { IDisposable, Disposable, DisposableStore, combinedDisposable, toDisposable } from 'vs/base/common/lifecycle';
 import { ViewPane, IViewPaneOptions } from 'vs/workbench/browser/parts/views/viewPaneContainer';
-import { append, $, addClass, toggleClass, removeClass, Dimension } from 'vs/base/browser/dom';
+import { append, $, addClass, toggleClass, removeClass, Dimension, getDomNodePagePosition } from 'vs/base/browser/dom';
 import { IListVirtualDelegate, IIdentityProvider } from 'vs/base/browser/ui/list/list';
 import { ISCMResourceGroup, ISCMResource, InputValidationType, ISCMService, ISCMRepository, ISCMInput, IInputValidation } from 'vs/workbench/contrib/scm/common/scm';
 import { ResourceLabels, IResourceLabel } from 'vs/workbench/browser/labels';
 import { CountBadge } from 'vs/base/browser/ui/countBadge/countBadge';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 import { IInstantiationService } from 'vs/platform/instantiation/common/instantiation';
-import { IContextViewService, IContextMenuService } from 'vs/platform/contextview/browser/contextView';
+import { IContextMenuService } from 'vs/platform/contextview/browser/contextView';
 import { IContextKeyService, IContextKey } from 'vs/platform/contextkey/common/contextkey';
 import { ICommandService } from 'vs/platform/commands/common/commands';
 import { IKeybindingService } from 'vs/platform/keybinding/common/keybinding';
@@ -78,7 +78,6 @@ import { DEFAULT_FONT_FAMILY } from 'vs/workbench/browser/style';
 import { Command } from 'vs/editor/common/modes';
 import { renderCodicons, Codicon } from 'vs/base/common/codicons';
 import { ToolBar } from 'vs/base/browser/ui/toolbar/toolbar';
-import { AnchorAlignment } from 'vs/base/browser/ui/contextview/contextview';
 import { domEvent } from 'vs/base/browser/event';
 import { StandardKeyboardEvent } from 'vs/base/browser/keyboardEvent';
 
@@ -270,6 +269,7 @@ class InputRenderer implements ICompressibleTreeRenderer<ISCMInput, FuzzyScore, 
 	private contentHeights = new WeakMap<ISCMInput, number>();
 
 	constructor(
+		private overflowContainer: HTMLElement,
 		private outerLayout: ISCMLayout,
 		private updateHeight: (input: ISCMInput, height: number) => void,
 		private focusTree: () => void,
@@ -282,7 +282,7 @@ class InputRenderer implements ICompressibleTreeRenderer<ISCMInput, FuzzyScore, 
 
 		const disposables = new DisposableStore();
 		const inputElement = append(container, $('.scm-input'));
-		const inputWidget = this.instantiationService.createInstance(SCMInputWidget, inputElement);
+		const inputWidget = this.instantiationService.createInstance(SCMInputWidget, inputElement, this.overflowContainer);
 		disposables.add(inputWidget);
 
 		const onKeyDown = Event.map(domEvent(container, 'keydown'), e => new StandardKeyboardEvent(e));
@@ -1286,6 +1286,7 @@ class SCMInputWidget extends Disposable {
 	private repositoryContextKey: IContextKey<ISCMRepository | undefined>;
 	private repositoryDisposables = new DisposableStore();
 
+	private validationContainer: HTMLElement;
 	private validation: IInputValidation | undefined;
 	private validationDisposable: IDisposable = Disposable.None;
 
@@ -1407,13 +1408,13 @@ class SCMInputWidget extends Disposable {
 
 	constructor(
 		container: HTMLElement,
+		overflowContainer: HTMLElement,
 		@IContextKeyService contextKeyService: IContextKeyService,
 		@IModelService private modelService: IModelService,
 		@IModeService private modeService: IModeService,
 		@IKeybindingService private keybindingService: IKeybindingService,
 		@IConfigurationService private configurationService: IConfigurationService,
 		@IInstantiationService instantiationService: IInstantiationService,
-		@IContextViewService private readonly contextViewService: IContextViewService,
 	) {
 		super();
 
@@ -1423,6 +1424,8 @@ class SCMInputWidget extends Disposable {
 
 		const contextKeyService2 = contextKeyService.createScoped(this.element);
 		this.repositoryContextKey = contextKeyService2.createKey('scmRepository', undefined);
+
+		this.validationContainer = append(overflowContainer, $('.scm-editor-validation-container'));
 
 		const editorOptions: IEditorConstructionOptions = {
 			...getSimpleEditorOptions(),
@@ -1435,7 +1438,8 @@ class SCMInputWidget extends Disposable {
 			wrappingStrategy: 'advanced',
 			wrappingIndent: 'none',
 			padding: { top: 3, bottom: 3 },
-			quickSuggestions: false
+			quickSuggestions: false,
+			overflowWidgetsDomNode: overflowContainer
 		};
 
 		const codeEditorWidgetOptions: ICodeEditorWidgetOptions = {
@@ -1505,19 +1509,19 @@ class SCMInputWidget extends Disposable {
 			return;
 		}
 
-		this.validationDisposable = this.contextViewService.showContextView({
-			getAnchor: () => this.editorContainer,
-			render: container => {
-				const element = append(container, $('.scm-editor-validation'));
-				toggleClass(element, 'validation-info', this.validation!.type === InputValidationType.Information);
-				toggleClass(element, 'validation-warning', this.validation!.type === InputValidationType.Warning);
-				toggleClass(element, 'validation-error', this.validation!.type === InputValidationType.Error);
-				element.style.width = `${this.editorContainer.clientWidth}px`;
-				element.textContent = this.validation!.message;
-				return Disposable.None;
-			},
-			anchorAlignment: AnchorAlignment.LEFT
-		});
+		const element = append(this.validationContainer, $('.scm-editor-validation'));
+		toggleClass(element, 'validation-info', this.validation!.type === InputValidationType.Information);
+		toggleClass(element, 'validation-warning', this.validation!.type === InputValidationType.Warning);
+		toggleClass(element, 'validation-error', this.validation!.type === InputValidationType.Error);
+		element.style.width = `${this.editorContainer.clientWidth}px`;
+		element.textContent = this.validation!.message;
+
+		const containerPosition = getDomNodePagePosition(this.validationContainer);
+		const position = getDomNodePagePosition(this.editorContainer);
+		element.style.top = `${position.top - containerPosition.top + this.editorContainer.clientHeight}px`;
+		element.style.left = `${position.left - containerPosition.left}px`;
+
+		this.validationDisposable = toDisposable(() => element.remove());
 	}
 
 	private getInputEditorFontFamily(): string {
@@ -1578,7 +1582,7 @@ export class SCMViewPane extends ViewPane {
 		onDidChange: this._onDidLayout.event
 	};
 
-	private listContainer!: HTMLElement;
+	private container!: HTMLElement;
 	private tree!: WorkbenchCompressibleObjectTree<TreeElement, FuzzyScore>;
 	private viewModel!: ViewModel;
 	private listLabels!: ResourceLabels;
@@ -1591,7 +1595,6 @@ export class SCMViewPane extends ViewPane {
 		@IKeybindingService protected keybindingService: IKeybindingService,
 		@IThemeService protected themeService: IThemeService,
 		@IContextMenuService protected contextMenuService: IContextMenuService,
-		@IContextViewService protected contextViewService: IContextViewService,
 		@ICommandService protected commandService: ICommandService,
 		@INotificationService private readonly notificationService: INotificationService,
 		@IEditorService protected editorService: IEditorService,
@@ -1611,17 +1614,18 @@ export class SCMViewPane extends ViewPane {
 	protected renderBody(container: HTMLElement): void {
 		super.renderBody(container);
 
-		// List
-		this.listContainer = append(container, $('.scm-view.show-file-icons'));
+		this.container = append(container, $('.scm-view.show-file-icons'));
 
-		const updateActionsVisibility = () => toggleClass(this.listContainer, 'show-actions', this.configurationService.getValue<boolean>('scm.alwaysShowActions'));
+		const overflowContainer = append(this.container, $('.scm-overflow-container.monaco-editor'));
+
+		const updateActionsVisibility = () => toggleClass(this.container, 'show-actions', this.configurationService.getValue<boolean>('scm.alwaysShowActions'));
 		Event.filter(this.configurationService.onDidChangeConfiguration, e => e.affectsConfiguration('scm.alwaysShowActions'))(updateActionsVisibility);
 		updateActionsVisibility();
 
 		const updateProviderCountVisibility = () => {
 			const value = this.configurationService.getValue<'hidden' | 'auto' | 'visible'>('scm.providerCountBadge');
-			toggleClass(this.listContainer, 'hide-provider-counts', value === 'hidden');
-			toggleClass(this.listContainer, 'auto-provider-counts', value === 'auto');
+			toggleClass(this.container, 'hide-provider-counts', value === 'hidden');
+			toggleClass(this.container, 'auto-provider-counts', value === 'auto');
 		};
 		Event.filter(this.configurationService.onDidChangeConfiguration, e => e.affectsConfiguration('scm.providerCountBadge'))(updateProviderCountVisibility);
 		updateProviderCountVisibility();
@@ -1634,7 +1638,7 @@ export class SCMViewPane extends ViewPane {
 
 		this._register(repositories.onDidSplice(() => this.updateActions()));
 
-		this.inputRenderer = this.instantiationService.createInstance(InputRenderer, this.layoutCache, (input, height) => this.tree.updateElementHeight(input, height), () => this.tree.domFocus());
+		this.inputRenderer = this.instantiationService.createInstance(InputRenderer, overflowContainer, this.layoutCache, (input, height) => this.tree.updateElementHeight(input, height), () => this.tree.domFocus());
 		const delegate = new ProviderListDelegate(this.inputRenderer);
 
 		const actionViewItemProvider = (action: IAction) => this.getActionViewItem(action);
@@ -1661,7 +1665,7 @@ export class SCMViewPane extends ViewPane {
 		this.tree = this.instantiationService.createInstance(
 			WorkbenchCompressibleObjectTree,
 			'SCM Tree Repo',
-			this.listContainer,
+			this.container,
 			delegate,
 			renderers,
 			{
@@ -1671,7 +1675,7 @@ export class SCMViewPane extends ViewPane {
 				filter,
 				sorter,
 				keyboardNavigationLabelProvider,
-				transformOptimization: false,
+				// transformOptimization: false,
 				overrideStyles: {
 					listBackground: this.viewDescriptorService.getViewLocationById(this.id) === ViewContainerLocation.Sidebar ? SIDE_BAR_BACKGROUND : PANEL_BACKGROUND
 				},
@@ -1693,8 +1697,8 @@ export class SCMViewPane extends ViewPane {
 		this.viewModel = this.instantiationService.createInstance(ViewModel, repositories, this.tree, this.menus, this.inputRenderer, viewMode, ViewModelSortKey.Path);
 		this._register(this.viewModel);
 
-		addClass(this.listContainer, 'file-icon-themable-tree');
-		addClass(this.listContainer, 'show-file-icons');
+		addClass(this.container, 'file-icon-themable-tree');
+		addClass(this.container, 'show-file-icons');
 
 		this.updateIndentStyles(this.themeService.getFileIconTheme());
 		this._register(this.themeService.onDidFileIconThemeChange(this.updateIndentStyles, this));
@@ -1706,10 +1710,10 @@ export class SCMViewPane extends ViewPane {
 	}
 
 	private updateIndentStyles(theme: IFileIconTheme): void {
-		toggleClass(this.listContainer, 'list-view-mode', this.viewModel.mode === ViewModelMode.List);
-		toggleClass(this.listContainer, 'tree-view-mode', this.viewModel.mode === ViewModelMode.Tree);
-		toggleClass(this.listContainer, 'align-icons-and-twisties', (this.viewModel.mode === ViewModelMode.List && theme.hasFileIcons) || (theme.hasFileIcons && !theme.hasFolderIcons));
-		toggleClass(this.listContainer, 'hide-arrows', this.viewModel.mode === ViewModelMode.Tree && theme.hidesExplorerArrows === true);
+		toggleClass(this.container, 'list-view-mode', this.viewModel.mode === ViewModelMode.List);
+		toggleClass(this.container, 'tree-view-mode', this.viewModel.mode === ViewModelMode.Tree);
+		toggleClass(this.container, 'align-icons-and-twisties', (this.viewModel.mode === ViewModelMode.List && theme.hasFileIcons) || (theme.hasFileIcons && !theme.hasFolderIcons));
+		toggleClass(this.container, 'hide-arrows', this.viewModel.mode === ViewModelMode.Tree && theme.hidesExplorerArrows === true);
 	}
 
 	private onDidChangeMode(): void {
@@ -1730,7 +1734,7 @@ export class SCMViewPane extends ViewPane {
 		this.layoutCache.width = width;
 		this._onDidLayout.fire();
 
-		this.listContainer.style.height = `${height}px`;
+		this.container.style.height = `${height}px`;
 		this.tree.layout(height, width);
 	}
 
