@@ -119,4 +119,3 @@ RUN mkdir -p /var/run/dbus /root/.vnc /home/${USERNAME}/.vnc \
 
 ENTRYPOINT ["/usr/local/share/init-dev-container.sh"]
 CMD ["sleep", "infinity"]
-
